@@ -1,6 +1,7 @@
 import requests, os, time, json
 import argparse, sys
 from datetime import datetime
+from elasticsearch import Elasticsearch
 
 from multiprocessing import Pool
 
@@ -30,13 +31,12 @@ def getFeedIds(feeds, feed_list):
     return feed_list
 
 ##########################################################################################################
-def getComments(comments, comments_count):
+def getComments(dataset, comments_count, post_id):
 
     # If comments exist.
-    comments = comments['comments'] if 'comments' in comments else comments
+    comments = dataset['comments'] if 'comments' in dataset else dataset
     if 'data' in comments:
-
-        if not stream:
+        if not stream and not elasticsearch:
             comments_dir = 'comments/'
             if not os.path.exists(comments_dir):
                 os.makedirs(comments_dir)
@@ -56,6 +56,29 @@ def getComments(comments, comments_count):
 
             if stream:
                 print(comment_content)
+            elif elasticsearch:
+                comment_content['post_id'] = post_id
+                # get reply_comment
+                # https://graph.facebook.com/v2.10/242305665805605_134537807167260/comments?access_token=
+                reply_comment_url = "https://graph.facebook.com/v2.10/" + comment['id'] + "/comments?" + token
+                reply_comment_count = get_comments_comments(getRequests(reply_comment_url), 0, comment['id'])
+                comment_content['reply_comment_count'] = reply_comment_count
+
+                # get reaction of comment
+                reply_reactions_count_dict = {
+                    'like': 0,
+                    'love': 0,
+                    'haha': 0,
+                    'wow': 0,
+                    'sad': 0,
+                    'angry': 0
+                }
+                reply_comment_reactions_url = "https://graph.facebook.com/v2.10/" + comment['id'] + '?fields=reactions.limit(100)&' + token
+                # https://graph.facebook.com/v2.10/134537807167260_134647173822990/?fields=reactions&access_token=
+                reply_reactions_count_dict = getReactions(getRequests(reply_comment_reactions_url), reply_reactions_count_dict, comment['id'])
+                comment_content.update(reply_reactions_count_dict)
+
+                es.update(index="facebook", doc_type='action', id=comment_content['id'], body={'doc': comment_content, 'doc_as_upsert':True})
             else:
                 print('Processing comment: ' + comment['id'] + '\n')
                 comment_file = open(comments_dir + comment['id'] + '.json', 'w')
@@ -66,18 +89,17 @@ def getComments(comments, comments_count):
         # Check comments has next or not.
         if 'next' in comments['paging']:
             comments_url = comments['paging']['next']
-            comments_count = getComments(getRequests(comments_url), comments_count)
+            comments_count = getComments(getRequests(comments_url), comments_count, post_id)
 
     return comments_count
 
 ##########################################################################################################
-def getReactions(reactions, reactions_count_dict):
+def getReactions(dataset, reactions_count_dict, post_id):
 
     # If reactions exist.
-    reactions = reactions['reactions'] if 'reactions' in reactions else reactions
+    reactions = dataset['reactions'] if 'reactions' in dataset else dataset
     if 'data' in reactions:
-
-        if not stream:
+        if not stream and not elasticsearch:
             reactions_dir = 'reactions/'
             if not os.path.exists(reactions_dir):
                 os.makedirs(reactions_dir)
@@ -99,6 +121,50 @@ def getReactions(reactions, reactions_count_dict):
 
             if stream:
                 print(reaction)
+            elif elasticsearch:
+                reaction['post_id'] = post_id
+                
+                # Change reation data format to be same as comment data format
+                user_id = reaction.get("id", None)
+                if (user_id is None):
+                    print("Reactions id is None!!")
+                    print(reaction)
+                else:
+                    reaction['user_id'] = user_id
+                reaction.pop('id', None)
+
+                user_name = reaction.get('name', None)
+                if (user_name is None):
+                    print("Reactions name is None!!")
+                    print(reaction)
+                else:
+                    reaction['user_name'] = user_name
+                reaction.pop('name', None)
+
+                # query comment, if exist upsert else create new action
+                res = es.search(index="facebook", doc_type="action", body={"query": {
+                    "bool": {
+                        "must": [
+                            {
+                                "match": {
+                                    "post_id": post_id
+                                }
+                            },
+                            {
+                                "match": {
+                                    "user_id": user_id
+                                }
+                            }
+                        ]
+                    }
+                }
+                })
+                if len(res['hits']['hits'])==1:
+                    search_result = res['hits']['hits'][0]
+                    comment_id = search_result['_id']
+                    es.update(index="facebook", doc_type='action', id=comment_id, body={'doc':reaction, 'doc_as_upsert':True})
+                # else:
+                #     es.index(index="facebook", doc_type='action', body=reaction)
             else:
                 print('Processing reaction: ' + reaction['id'] + '\n')
                 reaction_file = open(reactions_dir + reaction['id'] + '.json', 'w')
@@ -109,7 +175,7 @@ def getReactions(reactions, reactions_count_dict):
         # Check reactions has next or not.
         if 'next' in reactions['paging']:
             reactions_url = reactions['paging']['next']
-            reactions_count_dict = getReactions(getRequests(reactions_url), reactions_count_dict)
+            reactions_count_dict = getReactions(getRequests(reactions_url), reactions_count_dict, post_id)
             
     return reactions_count_dict
 
@@ -125,12 +191,53 @@ def getAttachments(attachments, attachments_content):
 
     return attachments_content
 
+
+def get_comments_comments(dataset, comments_count, comment_id):
+    # If comments exist.
+    if 'data' in dataset and len(dataset['data'])>0:
+        if not stream and not elasticsearch:
+            comments_dir = 'comments/'
+            if not os.path.exists(comments_dir):
+                os.makedirs(comments_dir)
+
+        for comment in dataset['data']:
+
+            comment_content = {
+                'id': comment['id'],
+                'user_id': comment['from']['id'],
+                'user_name': comment['from']['name'] if 'name' in comment['from'] else None,
+                'message': comment['message'],
+                'like_count': comment['like_count'] if 'like_count' in comment else None,
+                'created_time': comment['created_time']
+            }
+
+            comments_count+= 1
+
+            if stream:
+                print(comment_content)
+            elif elasticsearch:
+                comment_content['source_id'] = comment_id
+                es.update(index="facebook", doc_type='action', id=comment_content['id'], body={'doc': comment_content, 'doc_as_upsert':True})
+            else:
+                print('Processing comment: ' + comment['id'] + '\n')
+                comment_file = open(comments_dir + comment['id'] + '.json', 'w')
+                comment_file.write(json.dumps(comment_content, indent = 4, ensure_ascii = False))
+                comment_file.close()
+                #log.write('Processing comment: ' + feed_id + '/' + comment['id'] + '\n')
+
+        # Check comments has next or not.
+        if 'next' in dataset['paging']:
+            comments_url = dataset['paging']['next']
+            comments_count = getComments(getRequests(comments_url), comments_count, comment_id)
+
+    return comments_count
+
 ##########################################################################################################
 def getFeed(feed_id):
 
     feed_url = 'https://graph.facebook.com/v2.7/' + feed_id
 
-    if not stream:
+    if not stream and not elasticsearch:
         feed_dir = feed_id + '/'
         if not os.path.exists(feed_dir):
             os.makedirs(feed_dir)
@@ -144,7 +251,8 @@ def getFeed(feed_id):
 
     # For comments.
     comments_url = feed_url + '?fields=comments.limit(100)&' + token
-    comments_count = getComments(getRequests(comments_url), 0)
+    # https://graph.facebook.com/v2.7/242305665805605_1235637133139115/?fields=comments.limit(100)&access_token=
+    comments_count = getComments(getRequests(comments_url), 0, feed_id)
 
     # For reactions.
     if get_reactions:
@@ -157,7 +265,8 @@ def getFeed(feed_id):
             'angry': 0
         }
         reactions_url = feed_url + '?fields=reactions.limit(100)&' + token
-        reactions_count_dict = getReactions(getRequests(reactions_url), reactions_count_dict)
+        # https://graph.facebook.com/v2.7/242305665805605_1235637133139115/?fields=reactions.limit(100)&access_token=
+        reactions_count_dict = getReactions(getRequests(reactions_url), reactions_count_dict, feed_id)
     
     # For attachments.
     attachments_content = {
@@ -187,6 +296,10 @@ def getFeed(feed_id):
 
         if stream:
             print(feed_content)
+        elif elasticsearch:
+            print(feed_content)
+            res = es.index(index="facebook", doc_type='post', id=feed_content['id'], body=feed_content)
+            print(res['created'])
         else:
             feed_file = open(feed_id + '.json', 'w')
             feed_file.write(json.dumps(feed_content, indent = 4, ensure_ascii = False))
@@ -238,6 +351,9 @@ def getTarget(target):
 
 ##########################################################################################################
 if __name__ == '__main__':
+    # Set Elasticsearch config
+    es = Elasticsearch()
+
     # Set crawler target and parameters.
     parser = argparse.ArgumentParser()
 
@@ -247,6 +363,7 @@ if __name__ == '__main__':
 
     parser.add_argument("-r", "--reactions", help="Collect reactions or not. Default is no.")
     parser.add_argument("-s", "--stream", help="If yes, this crawler will turn to streaming mode.")
+    parser.add_argument("-e", "--elasticsearch", help="If yes, this crawler will store data to elasticsearch.")
 
     args = parser.parse_args()
 
@@ -263,6 +380,11 @@ if __name__ == '__main__':
         stream = True
     else:
         stream = False
+
+    if args.elasticsearch == 'yes':
+        elasticsearch = True
+    else:
+        elasticsearch = False
 
     app_id = 'YOUR_APP_ID'
     app_secret = 'YOUR_APP_SECRET'
@@ -285,4 +407,3 @@ if __name__ == '__main__':
         target = target.split(',')
         for t in target :
             getTarget(t)
-
