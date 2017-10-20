@@ -1,0 +1,79 @@
+{
+  "template": "facebook",
+	  "settings": {
+	    "index": {
+	      "number_of_shards": 1,
+	      "number_of_replicas": 0,
+	      "mapper.dynamic": false
+	    },
+	    "analysis": {
+	      "analyzer": {
+	        "chinese_analyzer": {
+	          "type": "custom",
+	          "tokenizer": "icu_tokenizer"
+	        }
+	      }
+	 	}
+	},
+	"mappings" : {
+		"post":{
+			"_all": {
+        		"enabled": false
+      		},
+			"properties" : {
+				"id": { "type": "keyword"},
+				"message" : { "type" : "text" },
+                "link": { "type": "text"},
+		      	"target": { "type": "text"},
+		      	"title": { "type": "text"},
+		      	"description": { "type": "text"},
+		      	"created_time": {
+		      		"type": "date",
+		      		"format": "yyyy-MM-dd HH:mm:ss"
+		      	},
+		      	"inserted_time": {
+		      		"type": "date",
+		      		"format": "yyyy-MM-dd HH:mm:ss"
+		      	},
+		      	"comments_count": { "type": "integer"},
+		      	"like": { "type": "integer"},
+		      	"love": { "type": "integer"},
+		      	"haha": { "type": "integer"},
+		      	"wow": { "type": "integer"},
+		      	"sad": { "type": "integer"},
+		      	"angry": { "type": "integer"}
+			}
+		},
+        "action" : {
+        	"_all": {
+        		"enabled": false
+      		},
+            "properties" : {
+            	"id": { "type": "keyword"},
+            	"source_id": {"type": "keyword"},
+                "message" : { "type" : "text" },
+                "user_id": { "type": "keyword"},
+		      	"user_name": { "type": "keyword"},
+		      	"post_id": { "type": "keyword"},
+		      	"created_time": {
+		      		"type": "date",
+		      		"format": "yyyy-MM-dd HH:mm:ss"
+		      	},
+		      	"inserted_time": {
+		      		"type": "date",
+		      		"format": "yyyy-MM-dd HH:mm:ss"
+		      	},
+				"like_count": { "type": "integer"},
+		      	"reply_comment_count": { "type": "integer"},
+		      	"like": { "type": "integer"},
+		      	"love": { "type": "integer"},
+		      	"haha": { "type": "integer"},
+		      	"wow": { "type": "integer"},
+		      	"sad": { "type": "integer"},
+		      	"angry": { "type": "integer"},
+		      	"type": {"type": "keyword"}
+            }
+
+        }
+    }
+}

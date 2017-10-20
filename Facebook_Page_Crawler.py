@@ -48,8 +48,7 @@ def getComments(dataset, comments_count, post_id):
                 'user_id': comment['from']['id'],
                 'user_name': comment['from']['name'] if 'name' in comment['from'] else None,
                 'message': comment['message'],
-                'like_count': comment['like_count'] if 'like_count' in comment else None,
-                'created_time': comment['created_time'],
+                'created_time': datetime.strftime(datetime.strptime(comment['created_time'], '%Y-%m-%dT%H:%M:%S+%f'), '%Y-%m-%d %H:%M:%S'),
                 'inserted_time': datetime.strftime(datetime.now(), '%Y-%m-%d %H:%M:%S')
             }
 
@@ -141,8 +140,8 @@ def getReactions(dataset, reactions_count_dict, post_id):
                     reaction['user_name'] = user_name
                 reaction.pop('name', None)
 
-                # query comment, if exist upsert else create new action
-                res = es.search(index=es_index, doc_type=es_comment_and_reaction_doc_type, body={"query": {
+                # query comment, if exist upsert with reaction
+                res = es.search(index=es_index, doc_type=es_comment_and_reaction_doc_type, ignore=404, body={"query": {
                     "bool": {
                         "must": [
                             {
@@ -159,10 +158,14 @@ def getReactions(dataset, reactions_count_dict, post_id):
                     }
                 }
                 })
-                if len(res['hits']['hits'])==1:
+
+                hits = res.get('hits', {}).get('total', None)
+                print(res)
+                if hits is not None and hits > 0:
                     search_result = res['hits']['hits'][0]
                     comment_id = search_result['_id']
                     es.update(index=es_index, doc_type=es_comment_and_reaction_doc_type, id=comment_id, body={'doc':reaction, 'doc_as_upsert':True})
+                # We don't store reaction to es. if you want, uncomment else.
                 # else:
                 #     es.index(index=es_index, doc_type=es_comment_and_reaction_doc_type, body=reaction)
             else:
@@ -207,8 +210,7 @@ def get_comments_comments(dataset, comments_count, comment_id):
                 'user_id': comment['from']['id'],
                 'user_name': comment['from']['name'] if 'name' in comment['from'] else None,
                 'message': comment['message'],
-                'like_count': comment['like_count'] if 'like_count' in comment else None,
-                'created_time': comment['created_time'],
+                'created_time': datetime.strftime(datetime.strptime(comment['created_time'], '%Y-%m-%dT%H:%M:%S+%f'), '%Y-%m-%d %H:%M:%S'),
                 'inserted_time': datetime.strftime(datetime.now(), '%Y-%m-%d %H:%M:%S')
             }
 
@@ -252,14 +254,9 @@ def getFeed(feed_id):
 
     # query post_id check exist or not
     if es_flag:
-        query_res = None
-        try:
-            query_res = es.get(index=es_index, doc_type=es_post_doc_type, id=feed_id)
-        except elasticsearch.ElasticsearchException as es_exception:
-            if es_exception.status_code != 404:
-                print("Not 404 : " + es_exception)
-        if query_res is not None:
-            # post exist
+        query_res = es.get(index=es_index, doc_type=es_post_doc_type, ignore=404, id=feed_id)
+        if query_res.get('found') is True:
+            # post exist so skip.
             return None
         else:
             print('crawling feed_id: ' + str(feed_id))
@@ -301,7 +298,7 @@ def getFeed(feed_id):
             'id': feed['id'],
             'message': feed['message'],
             'link': feed['link'] if 'link' in feed else None,
-            'created_time': feed['created_time'],
+            'created_time': datetime.strftime(datetime.strptime(feed['created_time'], '%Y-%m-%dT%H:%M:%S+%f'), '%Y-%m-%d %H:%M:%S'),
             'comments_count': comments_count,
             'inserted_time': datetime.strftime(datetime.now(), '%Y-%m-%d %H:%M:%S')
         }
@@ -402,6 +399,10 @@ if __name__ == '__main__':
         es_index = 'facebook'
         es_post_doc_type = 'post'
         es_comment_and_reaction_doc_type = 'action'
+        # Load mapping
+        with open("./template/facebook_template.json", mode='r') as mapping:
+            index_data = json.load(mapping)
+        es.indices.create(index=es_index, ignore=400, body=index_data)
     else:
         es_flag = False
 
