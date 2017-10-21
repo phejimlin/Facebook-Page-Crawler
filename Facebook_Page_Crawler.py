@@ -160,7 +160,6 @@ def getReactions(dataset, reactions_count_dict, post_id):
                 })
 
                 hits = res.get('hits', {}).get('total', None)
-                print(res)
                 if hits is not None and hits > 0:
                     search_result = res['hits']['hits'][0]
                     comment_id = search_result['_id']
@@ -312,8 +311,7 @@ def getFeed(feed_id):
             print(feed_content)
         elif es_flag:
             print(feed_content)
-            res = es.index(index=es_index, doc_type=es_post_doc_type, id=feed_content['id'], body=feed_content)
-            print(res['created'])
+            es.index(index=es_index, doc_type=es_post_doc_type, id=feed_content['id'], body=feed_content)
         else:
             feed_file = open(feed_id + '.json', 'w')
             feed_file.write(json.dumps(feed_content, indent = 4, ensure_ascii = False))
