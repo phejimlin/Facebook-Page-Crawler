@@ -18,7 +18,12 @@ def getFeedIds(feeds, feed_list):
 
     feeds = feeds['feed'] if 'feed' in feeds else feeds
 
-    for feed in feeds['data']:
+    feed_dataset = feeds.get('data')
+    if feed_dataset is None:
+        print("There isn't feed return from FB api.")
+        return []
+
+    for feed in feed_dataset:
         feed_list.append(feed['id'])
         if not stream:
             print('Feed found: ' + feed['id'] + '\n')
@@ -77,7 +82,10 @@ def getComments(dataset, comments_count, post_id):
                 reply_reactions_count_dict = getReactions(getRequests(reply_comment_reactions_url), reply_reactions_count_dict, comment['id'])
                 comment_content.update(reply_reactions_count_dict)
 
-                es.update(index=es_index, doc_type=es_comment_and_reaction_doc_type, id=comment_content['id'], body={'doc': comment_content, 'doc_as_upsert':True})
+                res = es.update(index=es_index, doc_type=es_comment_and_reaction_doc_type, id=comment_content['id'], ignore=404, body={'doc': comment_content, 'doc_as_upsert':True})
+                if res.get('found') is False:
+                    print(res)
+                    print(str(comment_content['id']) + ' is not found.')
             else:
                 print('Processing comment: ' + comment['id'] + '\n')
                 comment_file = open(comments_dir + comment['id'] + '.json', 'w')
@@ -219,7 +227,10 @@ def get_comments_comments(dataset, comments_count, comment_id):
                 print(comment_content)
             elif es_flag:
                 comment_content['source_id'] = comment_id
-                es.update(index=es_index, doc_type=es_comment_and_reaction_doc_type, id=comment_content['id'], body={'doc': comment_content, 'doc_as_upsert':True})
+                res = es.update(index=es_index, doc_type=es_comment_and_reaction_doc_type, ignore=404, id=comment_content['id'], body={'doc': comment_content, 'doc_as_upsert':True})
+                if res.get('found') is False:
+                    print(res)
+                    print(str(comment_content['id']) + ' is not found.')
             else:
                 print('Processing comment: ' + comment['id'] + '\n')
                 comment_file = open(comments_dir + comment['id'] + '.json', 'w')
@@ -256,6 +267,7 @@ def getFeed(feed_id):
         query_res = es.get(index=es_index, doc_type=es_post_doc_type, ignore=404, id=feed_id)
         if query_res.get('found') is True:
             # post exist so skip.
+            print(str(feed_id) + " exist, so skip it.")
             return None
         else:
             print('crawling feed_id: ' + str(feed_id))
@@ -393,7 +405,7 @@ if __name__ == '__main__':
     if args.elasticsearch == 'yes':
         es_flag = True
         # Set Elasticsearch config
-        es = elasticsearch.Elasticsearch()
+        es = elasticsearch.Elasticsearch(timeout=30, max_retries=10, retry_on_timeout=True)
         es_index = 'facebook'
         es_post_doc_type = 'post'
         es_comment_and_reaction_doc_type = 'action'
@@ -409,7 +421,7 @@ if __name__ == '__main__':
 
     token = 'access_token=' + app_id + '|' + app_secret
 
-    #Create a directory to restore the result if not in stream mode.
+    # Create a directory to restore the result if not in stream mode.
     if not stream:
         result_dir = 'Result/'
         if not os.path.exists(result_dir):
