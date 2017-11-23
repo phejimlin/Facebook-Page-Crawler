@@ -7,9 +7,26 @@ from multiprocessing import Pool
 sys.setrecursionlimit(2000)
 ##########################################################################################################
 def getRequests(url):
+    try:
+        requests_result = requests.get(url, headers={'Connection':'close'}).json()
+    except ValueError:
+        print("Requests value error.")
+        return {}
+    time.sleep(0.1)
 
-    requests_result = requests.get(url, headers={'Connection':'close'}).json()
-    time.sleep(0.01)
+    # Handle request limit reached
+    error = requests_result.get('error')
+    if error is not None:
+        code = requests_result.get('error', {}).get('code')
+        if code == 17:
+            print(url)
+            print(requests_result)
+            print('Wait 10 min.')
+            time.sleep(600)
+            return getRequests(url)
+        else:
+            print(requests_result)
+            return {}
 
     return requests_result
 
@@ -48,6 +65,17 @@ def getComments(dataset, comments_count, post_id):
 
         for comment in comments['data']:
 
+            # Remove name in the message
+            message_tags = comment.get("message_tags")
+            if message_tags is not None:
+                message = comment['message']
+                for tag in message_tags:
+                    length = tag['length']
+                    offset = tag['offset']
+                    message = message[0:offset] + (' ' * length) + message[offset + length:]
+                comment['message'] = message
+                    
+
             comment_content = {
                 'id': comment['id'],
                 'user_id': comment['from']['id'],
@@ -65,7 +93,7 @@ def getComments(dataset, comments_count, post_id):
                 comment_content['post_id'] = post_id
                 # get reply_comment
                 # https://graph.facebook.com/v2.10/242305665805605_134537807167260/comments?access_token=
-                reply_comment_url = "https://graph.facebook.com/v2.10/" + comment['id'] + "/comments?" + token
+                reply_comment_url = "https://graph.facebook.com/v2.10/" + comment['id'] + "/comments?fields=created_time,from,message,id,message_tags&" + long_lived_token
                 reply_comment_count = get_comments_comments(getRequests(reply_comment_url), 0, comment['id'])
                 comment_content['reply_comment_count'] = reply_comment_count
                 # get reaction of comment
@@ -79,13 +107,10 @@ def getComments(dataset, comments_count, post_id):
                 }
                 reply_comment_reactions_url = "https://graph.facebook.com/v2.10/" + comment['id'] + '?fields=reactions.limit(100)&' + token
                 # https://graph.facebook.com/v2.10/134537807167260_134647173822990/?fields=reactions&access_token=
-                reply_reactions_count_dict = getReactions(getRequests(reply_comment_reactions_url), reply_reactions_count_dict, comment['id'])
+                reply_reactions_count_dict = getReactions(getRequests(reply_comment_reactions_url), reply_reactions_count_dict, "source_id", comment['id'])
                 comment_content.update(reply_reactions_count_dict)
 
-                res = es.update(index=es_index, doc_type=es_comment_and_reaction_doc_type, id=comment_content['id'], ignore=404, body={'doc': comment_content, 'doc_as_upsert':True})
-                if res.get('found') is False:
-                    print(res)
-                    print(str(comment_content['id']) + ' is not found.')
+                es.update(index=es_index, doc_type=es_comment_and_reaction_doc_type, id=comment_content['id'], body={'doc': comment_content, 'doc_as_upsert':True})
             else:
                 print('Processing comment: ' + comment['id'] + '\n')
                 comment_file = open(comments_dir + comment['id'] + '.json', 'w')
@@ -101,7 +126,7 @@ def getComments(dataset, comments_count, post_id):
     return comments_count
 
 ##########################################################################################################
-def getReactions(dataset, reactions_count_dict, post_id):
+def getReactions(dataset, reactions_count_dict, source, id):
 
     # If reactions exist.
     reactions = dataset['reactions'] if 'reactions' in dataset else dataset
@@ -129,7 +154,7 @@ def getReactions(dataset, reactions_count_dict, post_id):
             if stream:
                 print(reaction)
             elif es_flag:
-                reaction['post_id'] = post_id
+                reaction[source] = id
                 
                 # Change reation data format to be same as comment data format
                 user_id = reaction.get("id", None)
@@ -149,12 +174,12 @@ def getReactions(dataset, reactions_count_dict, post_id):
                 reaction.pop('name', None)
 
                 # query comment, if exist upsert with reaction
-                res = es.search(index=es_index, doc_type=es_comment_and_reaction_doc_type, ignore=404, body={"query": {
+                res_query_comment = es.search(index=es_index, doc_type=es_comment_and_reaction_doc_type, body={"query": {
                     "bool": {
                         "must": [
                             {
                                 "match": {
-                                    "post_id": post_id
+                                    source: id
                                 }
                             },
                             {
@@ -167,9 +192,9 @@ def getReactions(dataset, reactions_count_dict, post_id):
                 }
                 })
 
-                hits = res.get('hits', {}).get('total', None)
-                if hits is not None and hits > 0:
-                    search_result = res['hits']['hits'][0]
+                total = res_query_comment.get('hits', {}).get('total', None)
+                if total is not None and total > 0:
+                    search_result = res_query_comment['hits']['hits'][0]
                     comment_id = search_result['_id']
                     es.update(index=es_index, doc_type=es_comment_and_reaction_doc_type, id=comment_id, body={'doc':reaction, 'doc_as_upsert':True})
                 # We don't store reaction to es. if you want, uncomment else.
@@ -185,7 +210,7 @@ def getReactions(dataset, reactions_count_dict, post_id):
         # Check reactions has next or not.
         if 'next' in reactions['paging']:
             reactions_url = reactions['paging']['next']
-            reactions_count_dict = getReactions(getRequests(reactions_url), reactions_count_dict, post_id)
+            reactions_count_dict = getReactions(getRequests(reactions_url), reactions_count_dict, source, id)
             
     return reactions_count_dict
 
@@ -211,6 +236,15 @@ def get_comments_comments(dataset, comments_count, comment_id):
                 os.makedirs(comments_dir)
 
         for comment in dataset['data']:
+            # Remove name in the message
+            message_tags = comment.get("message_tags")
+            if message_tags is not None:
+                message = comment['message']
+                for tag in message_tags:
+                    length = tag['length']
+                    offset = tag['offset']
+                    message = message[0:offset] + (' ' * length) + message[offset + length:]
+                comment['message'] = message
 
             comment_content = {
                 'id': comment['id'],
@@ -227,10 +261,7 @@ def get_comments_comments(dataset, comments_count, comment_id):
                 print(comment_content)
             elif es_flag:
                 comment_content['source_id'] = comment_id
-                res = es.update(index=es_index, doc_type=es_comment_and_reaction_doc_type, ignore=404, id=comment_content['id'], body={'doc': comment_content, 'doc_as_upsert':True})
-                if res.get('found') is False:
-                    print(res)
-                    print(str(comment_content['id']) + ' is not found.')
+                es.update(index=es_index, doc_type=es_comment_and_reaction_doc_type, id=comment_content['id'], body={'doc': comment_content, 'doc_as_upsert':True})
             else:
                 print('Processing comment: ' + comment['id'] + '\n')
                 comment_file = open(comments_dir + comment['id'] + '.json', 'w')
@@ -274,7 +305,7 @@ def getFeed(feed_id):
 
 
     # For comments.
-    comments_url = feed_url + '?fields=comments.limit(100)&' + token
+    comments_url = feed_url + '?fields=comments.limit(100){from,created_time,message_tags,message,id}&' + long_lived_token
     # https://graph.facebook.com/v2.7/242305665805605_1235637133139115/?fields=comments.limit(100)&access_token=
     comments_count = getComments(getRequests(comments_url), 0, feed_id)
 
@@ -290,7 +321,7 @@ def getFeed(feed_id):
         }
         reactions_url = feed_url + '?fields=reactions.limit(100)&' + token
         # https://graph.facebook.com/v2.7/242305665805605_1235637133139115/?fields=reactions.limit(100)&access_token=
-        reactions_count_dict = getReactions(getRequests(reactions_url), reactions_count_dict, feed_id)
+        reactions_count_dict = getReactions(getRequests(reactions_url), reactions_count_dict, "post_id", feed_id)
     
     # For attachments.
     attachments_content = {
@@ -322,7 +353,13 @@ def getFeed(feed_id):
         if stream:
             print(feed_content)
         elif es_flag:
-            print(feed_content)
+            # Handle 'ascii' codec exception.
+            try:
+                print(feed_content)
+            except Exception as e:
+                print(e)
+                print(feed_content['id'])
+
             es.index(index=es_index, doc_type=es_post_doc_type, id=feed_content['id'], body=feed_content)
         else:
             feed_file = open(feed_id + '.json', 'w')
@@ -418,8 +455,11 @@ if __name__ == '__main__':
 
     app_id = 'YOUR_APP_ID'
     app_secret = 'YOUR_APP_SECRET'
-
+    user_long_lived_token = 'YOUR_LONG_LIVED_TOKEN'
+    
+    long_lived_token = 'access_token=' + user_long_lived_token
     token = 'access_token=' + app_id + '|' + app_secret
+
 
     # Create a directory to restore the result if not in stream mode.
     if not stream:
