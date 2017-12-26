@@ -53,6 +53,19 @@ def getFeedIds(feeds, feed_list):
     return feed_list
 
 ##########################################################################################################
+def message_tags_worker(message, message_tags):
+    # Replace user name with <user_name> and return clean message
+    clean_message = ''
+    start = 0
+    for tag in message_tags:
+        length = tag['length']
+        offset = tag['offset']
+        clean_message = clean_message + message[start:offset] + '<user_name>'
+        start = start + length + offset
+    clean_message = clean_message + message[offset + length:]
+    return clean_message
+
+##########################################################################################################
 def getComments(dataset, comments_count, post_id):
 
     # If comments exist.
@@ -68,13 +81,7 @@ def getComments(dataset, comments_count, post_id):
             # Remove name in the message
             message_tags = comment.get("message_tags")
             if message_tags is not None:
-                message = comment['message']
-                for tag in message_tags:
-                    length = tag['length']
-                    offset = tag['offset']
-                    message = message[0:offset] + (' ' * length) + message[offset + length:]
-                comment['message'] = message
-                    
+                comment['message'] = message_tags_worker(comment['message'], message_tags)
 
             comment_content = {
                 'id': comment['id'],
@@ -236,15 +243,11 @@ def get_comments_comments(dataset, comments_count, comment_id):
                 os.makedirs(comments_dir)
 
         for comment in dataset['data']:
+
             # Remove name in the message
             message_tags = comment.get("message_tags")
             if message_tags is not None:
-                message = comment['message']
-                for tag in message_tags:
-                    length = tag['length']
-                    offset = tag['offset']
-                    message = message[0:offset] + (' ' * length) + message[offset + length:]
-                comment['message'] = message
+                comment['message'] = message_tags_worker(comment['message'], message_tags)
 
             comment_content = {
                 'id': comment['id'],
